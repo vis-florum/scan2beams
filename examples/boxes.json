@@ -1,0 +1,122 @@
+{
+  "schema_version": 1,
+  "source": "synthetic.nrrd",
+  "source_sizes": [
+    64,
+    144,
+    400
+  ],
+  "source_type": "uint16",
+  "source_file_bytes": 7372921,
+  "spacing_mm": [
+    1,
+    1,
+    1
+  ],
+  "original_header": "NRRD0005\ntype: uint16\ndimension: 3\nsizes: 64 144 400\nencoding: raw\nendian: little\nspacings: 1 1 1\nunits: \"mm\" \"mm\" \"mm\"\n\n",
+  "axis_order": [
+    "x",
+    "y",
+    "z"
+  ],
+  "object_order": "decreasing voxel Y",
+  "bounds": "min inclusive, max exclusive",
+  "crops_written": false,
+  "parameters": {
+    "threshold": 200,
+    "metal_threshold": 0,
+    "erosion_mm": 1.5,
+    "margin_mm": 5,
+    "z_margin_mm": 3,
+    "end_trim_mm": 0,
+    "gap_mm": 20,
+    "plate_thickness_mm": 20,
+    "min_width_mm": 10,
+    "min_length_mm": 100,
+    "samples": 3,
+    "cross_sections": 9,
+    "step": 2,
+    "z_step": 4,
+    "box_preview": true,
+    "end_guard": false,
+    "explicit_boxes": false
+  },
+  "objects": [
+    {
+      "index": 1,
+      "file": "synthetic_1.nrrd",
+      "min": [
+        15,
+        99,
+        29
+      ],
+      "max": [
+        49,
+        129,
+        359
+      ],
+      "size": [
+        34,
+        30,
+        330
+      ]
+    },
+    {
+      "index": 2,
+      "file": "synthetic_2.nrrd",
+      "min": [
+        15,
+        67,
+        25
+      ],
+      "max": [
+        49,
+        97,
+        367
+      ],
+      "size": [
+        34,
+        30,
+        342
+      ]
+    },
+    {
+      "index": 3,
+      "file": "synthetic_3.nrrd",
+      "min": [
+        15,
+        35,
+        21
+      ],
+      "max": [
+        49,
+        65,
+        375
+      ],
+      "size": [
+        34,
+        30,
+        354
+      ]
+    },
+    {
+      "index": 4,
+      "file": "synthetic_4.nrrd",
+      "min": [
+        15,
+        3,
+        17
+      ],
+      "max": [
+        49,
+        33,
+        383
+      ],
+      "size": [
+        34,
+        30,
+        366
+      ]
+    }
+  ]
+}
