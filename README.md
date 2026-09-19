@@ -13,6 +13,7 @@ The existing local `build/` was moved with the project; its executable is ready 
 ```text
 src/scan_separator.cpp      CLI, NRRD I/O, detection, crop writer
 src/preview.cpp, preview.h  Dependency-free PNG diagnostics
+src/json.cpp, json.h        Manifest parsing and preservation
 scripts/replay_crops.py      Recreate crops from saved JSON
 tests/integration.py        Voxel-exact integration checks
 examples/generate.py        Small reproducible four-beam scan
@@ -30,6 +31,20 @@ python3 scripts/replay_crops.py preview/boxes.json -o crops
 ```
 
 Without labels, names are `scan_1.nrrd`, `scan_2.nrrd`, etc. Labels are exact filename stems, assigned from highest to lowest voxel Y; they imply the expected count. `--labels-file` accepts comma-separated or newline-separated names. A count mismatch fails before outputs are written. Existing files are refused; use a fresh output directory. One scan per invocation.
+
+To enlarge an individual crop without repeating segmentation:
+
+1. Edit that object's `min` and/or `max` coordinates in `crops/boxes.json`.
+2. Delete **all** `.nrrd` crop files from `crops/`. Leave `boxes.json` in place.
+3. Rerun the same scan and output command.
+
+```sh
+build/scan_separator scan.nrrd -o crops
+```
+
+When the output directory already contains `boxes.json` but no NRRD files, the tool automatically enters manifest-replay mode. The JSON boxes and filenames are authoritative; segmentation, margins, labels, and count arguments are skipped. `min` is inclusive and `max` is exclusive. You may leave `size` unchanged because it is recalculated from the edited bounds. Bounds outside the source scan are rejected. The source dimensions, type, file size, and NRRD header must still match the manifest.
+
+Every replay regenerates and replaces `boxes_preview.png` before writing the crops, so inspect it to confirm the manual change. This safety diagnostic is always produced during manifest replay, even if `--no-box-preview` is supplied. Custom JSON fields and the original detection parameters are preserved. `crops_written` is set to false before writing and true after all crops finish. Replay is refused if any NRRD remains in the output directory, which prevents a mixture of old and new crops. Delete `boxes.json` or choose a new output directory when you want segmentation to run again.
 
 The input must be a **raw 3D uint16 or int16 NRRD**, attached or with one detached data file, in either byte order. Decompress gzip inputs first. Crops preserve source values, type, byte order, spacing, directions and custom metadata. Spatial origins shift by the crop offset. Physical parameters use millimetres; absent spacing defaults to 1 mm with a warning.
 
@@ -65,7 +80,7 @@ Common tuning options; see `build/scan_separator --help` for all options:
 
 Increase erosion for narrow artefact bridges. Use an upper intensity cutoff only if it remains above the wood range. Use strides of one for finer estimates. Beams need separate Y bands and a shared interior visible in the sampled longitudinal planes. Large gaps, extreme drift, or short fragments may require tuning. Sparse bounds are estimates; margins cover small sampling errors.
 
-Every successful run, including `--preview` and explicit-box replay, writes `boxes_preview.png` alongside `boxes.json` before crop copying begins. It contains an XY section, a full YZ section, close-ups of both ends, and an XZ section for each beam. Large colored numbers match the JSON indices and output order; the same colors follow a beam through all panels. Axes use original voxel indices. XY preserves the X/Y voxel aspect ratio; longitudinal views stretch the length to show the full scan. Contrast is set from twice the median sampled foreground intensity. Use `--no-box-preview` to skip image generation. `--preview` skips large voxel outputs while retaining both diagnostic files.
+Every successful run, including `--preview` and explicit-box replay, writes `boxes_preview.png` alongside `boxes.json` before crop copying begins. It contains an XY section, a full YZ section, close-ups of both ends, and an XZ section for each beam. Large colored numbers match the JSON indices and output order; the same colors follow a beam through all panels. Axes use original voxel indices. XY preserves the X/Y voxel aspect ratio; longitudinal views stretch the length to show the full scan. Contrast is set from twice the median sampled foreground intensity. Use `--no-box-preview` to skip image generation on a fresh run; manifest replay always recreates it. `--preview` skips large voxel outputs while retaining both diagnostic files.
 
 Rectangular crops may include parts of holders to preserve all detected beam edges and their margin. To deliberately remove such overlap, use `--trim-end-clutter`, `--end-trim-mm`, or explicit bounds. The optional end check is heuristic and can remove real beam length; it considers compact detached components near the outer 10% of a beam.
 

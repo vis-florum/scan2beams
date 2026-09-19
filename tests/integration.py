@@ -170,6 +170,34 @@ class Pipeline(unittest.TestCase):
         self.assertIn('Expected 3 beams', result.stderr)
         self.assertFalse(target.exists())
 
+        # Edit one box, remove all crops, and rerun the original command. The
+        # manifest is now authoritative: segmentation and CLI margins are not
+        # applied, custom metadata survives, and the preview is regenerated.
+        edited = json.loads((self.root/'out/boxes.json').read_text())
+        edited['objects'][0]['min'][0] -= 2
+        edited['objects'][0]['max'][1] += 2
+        edited['objects'][0]['size'] = [1, 1, 1]  # deliberately stale
+        edited['manual_note'] = 'keep this field'
+        edited['parameters']['manual_setting'] = 17
+        expected_min = edited['objects'][0]['min'][:]
+        expected_max = edited['objects'][0]['max'][:]
+        (self.root/'out/boxes.json').write_text(json.dumps(edited, indent=2)+'\n')
+        for crop in (self.root/'out').glob('*.nrrd'):
+            crop.unlink()
+        (self.root/'out/boxes_preview.png').write_bytes(b'old preview')
+        replayed, result = self.run_tool(source, '--margin-mm', 99, '--no-box-preview')
+        self.assertIn('Reusing edited boxes', result.stderr)
+        self.assertIn('always regenerates boxes_preview.png', result.stderr)
+        actual = self.assert_crops(source, replayed, voxels, shape, 4)
+        self.assertEqual(actual['objects'][0]['min'], expected_min)
+        self.assertEqual(actual['objects'][0]['max'], expected_max)
+        self.assertEqual(actual['objects'][0]['size'],
+                         [expected_max[i]-expected_min[i] for i in range(3)])
+        self.assertEqual(actual['manual_note'], 'keep this field')
+        self.assertEqual(actual['parameters']['manual_setting'], 17)
+        self.assertEqual(actual['parameters']['margin_mm'], 5)
+        self.assertTrue(actual['parameters']['manifest_replay'])
+
     def test_detached_end_plate_inside_margin_trims_box(self):
         source, voxels, _, shape = self.make_scan(count=1)
         nx, ny, _ = shape
@@ -248,9 +276,22 @@ class Pipeline(unittest.TestCase):
         self.assert_crops(source, target, voxels, shape, 1)
         original = (target/'scan_1.nrrd').read_bytes()
         _, result = self.run_tool(source, '--box', f'0,0,0,{nx},{ny},{nz}', ok=False)
-        self.assertIn('already exists', result.stderr)
+        self.assertIn('Delete all crop NRRDs', result.stderr)
         self.assertEqual((target/'scan_1.nrrd').read_bytes(), original)
         self.run_tool(source, '--box', f'0,0,0,{nx+1},{ny},{nz}', ok=False, output='invalid')
+
+    def test_manifest_replay_rejects_invalid_bounds_without_rewriting(self):
+        source, _, _, shape = self.make_scan(count=1)
+        target, _ = self.run_tool(source, '--preview')
+        data = json.loads((target/'boxes.json').read_text())
+        data['objects'][0]['max'][0] = shape[0]+1
+        edited = json.dumps(data, indent=2)+'\n'
+        (target/'boxes.json').write_text(edited)
+        preview = (target/'boxes_preview.png').read_bytes()
+        _, result = self.run_tool(source, ok=False)
+        self.assertIn('outside the source scan', result.stderr)
+        self.assertEqual((target/'boxes.json').read_text(), edited)
+        self.assertEqual((target/'boxes_preview.png').read_bytes(), preview)
 
     def test_invalid_input_and_names(self):
         source, _, _, _ = self.make_scan(count=1)

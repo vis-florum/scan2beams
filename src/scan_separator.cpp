@@ -1,4 +1,5 @@
 #include "preview.h"
+#include "json.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -98,6 +99,7 @@ Separates long beams arranged along Y. Output order: decreasing voxel Y.
 Input: raw 3D uint16 or int16 NRRD, attached or a single detached data file.
 Crops retain the source voxel type and byte order. Existing outputs are refused.
 Physical parameters use header spacing, assumed to be in millimetres.
+If OUTPUT contains boxes.json but no NRRD crops, its edited boxes are replayed.
 )";
 Config parse(int argc, char** argv) {
     Config c;
@@ -565,6 +567,68 @@ std::string json_string(const std::string& s) {
 template<class T> std::string array_text(const std::array<T,3>& a) {
     std::ostringstream out; out<<std::setprecision(17)<<'['<<a[0]<<", "<<a[1]<<", "<<a[2]<<']'; return out.str();
 }
+int json_integer(const simple_json::Value& value,const std::string& field) {
+    if(value.type!=simple_json::Value::Type::Number || !std::isfinite(value.number) ||
+       value.number!=std::floor(value.number) || value.number<std::numeric_limits<int>::min() ||
+       value.number>std::numeric_limits<int>::max())
+        throw std::runtime_error("boxes.json field "+field+" must be an integer");
+    return static_cast<int>(value.number);
+}
+I3 json_i3(const simple_json::Value& value,const std::string& field) {
+    if(value.type!=simple_json::Value::Type::Array || value.array.size()!=3)
+        throw std::runtime_error("boxes.json field "+field+" must contain three integers");
+    I3 out;for(int d=0;d<3;++d) out[d]=json_integer(value.array[d],field);return out;
+}
+std::string json_text(const simple_json::Value& value,const std::string& field) {
+    if(value.type!=simple_json::Value::Type::String)
+        throw std::runtime_error("boxes.json field "+field+" must be a string");
+    return value.string;
+}
+struct LoadedManifest { std::vector<Box> boxes; simple_json::Value document; double preview_threshold; };
+LoadedManifest load_manifest(const fs::path& path,const Volume& v,const Config& c) {
+    auto root=simple_json::parse_file(path);
+    if(root.type!=simple_json::Value::Type::Object) throw std::runtime_error("boxes.json root must be an object");
+    if(json_integer(root.at("schema_version"),"schema_version")!=1) throw std::runtime_error("Unsupported boxes.json schema_version");
+    if(json_i3(root.at("source_sizes"),"source_sizes")!=v.size) throw std::runtime_error("boxes.json source dimensions differ from the input scan");
+    auto expected_type=v.signed_type?"int16":"uint16";
+    if(json_text(root.at("source_type"),"source_type")!=expected_type) throw std::runtime_error("boxes.json source type differs from the input scan");
+    const auto& bytes=root.at("source_file_bytes");
+    if(bytes.type!=simple_json::Value::Type::Number || bytes.number<0 ||
+       bytes.number>static_cast<double>(std::numeric_limits<uintmax_t>::max()) || bytes.number!=std::floor(bytes.number) ||
+       static_cast<uintmax_t>(bytes.number)!=fs::file_size(c.input))
+        throw std::runtime_error("boxes.json source file size differs from the input scan");
+    if(json_text(root.at("original_header"),"original_header")!=v.original_header)
+        throw std::runtime_error("boxes.json source header differs from the input scan");
+    auto& objects=root.at("objects");
+    if(objects.type!=simple_json::Value::Type::Array || objects.array.empty()) throw std::runtime_error("boxes.json objects must be a non-empty array");
+    std::vector<Box> boxes;boxes.reserve(objects.array.size());
+    for(size_t i=0;i<objects.array.size();++i) {
+        auto& object=objects.array[i];
+        if(object.type!=simple_json::Value::Type::Object) throw std::runtime_error("boxes.json object "+std::to_string(i+1)+" must be an object");
+        if(auto index=object.find("index");index && json_integer(*index,"objects.index")!=static_cast<int>(i+1))
+            throw std::runtime_error("boxes.json object indices must be sequential and match array order");
+        std::string file=json_text(object.at("file"),"objects.file");
+        if(file.size()<=5 || file.substr(file.size()-5)!=".nrrd") throw std::runtime_error("boxes.json crop filenames must end in .nrrd");
+        Box box;box.lo=json_i3(object.at("min"),"objects.min");box.hi=json_i3(object.at("max"),"objects.max");
+        box.name=safe_name(file.substr(0,file.size()-5));
+        I3 extent;for(int d=0;d<3;++d) extent[d]=box.hi[d]-box.lo[d];
+        object.set("size",simple_json::Value::array_value({simple_json::Value::number_value(extent[0]),simple_json::Value::number_value(extent[1]),simple_json::Value::number_value(extent[2])}));
+        boxes.push_back(std::move(box));
+    }
+    root.set("crops_written",simple_json::Value::boolean_value(false));
+    auto parameters=root.find("parameters");
+    if(!parameters) {root.set("parameters",simple_json::Value::object_value({}));parameters=root.find("parameters");}
+    if(parameters->type!=simple_json::Value::Type::Object) throw std::runtime_error("boxes.json parameters must be an object");
+    double preview_threshold=c.threshold;
+    if(auto threshold=parameters->find("threshold")) {
+        if(threshold->type!=simple_json::Value::Type::Number || !std::isfinite(threshold->number))
+            throw std::runtime_error("boxes.json parameters.threshold must be a finite number");
+        preview_threshold=threshold->number;
+    }
+    parameters->set("manifest_replay",simple_json::Value::boolean_value(true));
+    parameters->set("box_preview",simple_json::Value::boolean_value(c.box_preview));
+    return {std::move(boxes),std::move(root),preview_threshold};
+}
 std::string manifest(const Volume& v,const Config& c,const std::vector<Box>& boxes) {
     std::ostringstream out; out<<std::setprecision(17);
     out<<"{\n  \"schema_version\": 1,\n  \"source\": "<<json_string(fs::absolute(c.input).string())
@@ -576,7 +640,7 @@ std::string manifest(const Volume& v,const Config& c,const std::vector<Box>& box
        <<", \"margin_mm\": "<<c.margin<<", \"z_margin_mm\": "<<c.z_margin<<", \"end_trim_mm\": "<<c.end_trim<<", \"gap_mm\": "<<c.gap<<", \"plate_thickness_mm\": "<<c.plate_thickness
        <<", \"min_width_mm\": "<<c.min_width<<", \"min_length_mm\": "<<c.min_length<<", \"samples\": "<<c.samples
        <<", \"cross_sections\": "<<c.cross_sections<<", \"step\": "<<c.step<<", \"z_step\": "<<c.z_step
-       <<", \"box_preview\": "<<(c.box_preview?"true":"false")<<", \"end_guard\": "<<(c.end_guard?"true":"false")<<", \"explicit_boxes\": "<<(c.boxes.empty()?"false":"true")<<"},\n  \"objects\": [\n";
+       <<", \"box_preview\": "<<(c.box_preview?"true":"false")<<", \"manifest_replay\": false, \"end_guard\": "<<(c.end_guard?"true":"false")<<", \"explicit_boxes\": "<<(c.boxes.empty()?"false":"true")<<"},\n  \"objects\": [\n";
     for(size_t i=0;i<boxes.size();++i) {
         const auto& b=boxes[i]; I3 extent; for(int d=0;d<3;++d) extent[d]=b.hi[d]-b.lo[d];
         out<<"    {\"index\": "<<i+1<<", \"file\": "<<json_string(b.name+".nrrd")<<", \"min\": "<<array_text(b.lo)<<", \"max\": "<<array_text(b.hi)<<", \"size\": "<<array_text(extent)<<'}'<<(i+1<boxes.size()?",":"")<<'\n';
@@ -622,43 +686,69 @@ int main(int argc,char** argv) {
         auto start=std::chrono::steady_clock::now();
         Config c=parse(argc,argv); Volume v(c.input);
         std::cerr<<"Scan "<<array_text(v.size)<<", "<<(v.signed_type?"int16":"uint16")<<", spacing "<<array_text(v.spacing)<<" mm\n";
-        auto boxes=c.boxes.empty()?detect(v,c):c.boxes;
-        if(c.count && c.count!=static_cast<int>(boxes.size())) throw std::runtime_error("Count and boxes disagree");
+        auto json_path=c.output/"boxes.json",partial=c.output/"boxes.json.partial";
+        bool reuse_manifest=fs::exists(json_path);
+        if(reuse_manifest) {
+            if(!fs::is_regular_file(json_path)) throw std::runtime_error("Output boxes.json is not a regular file");
+            for(const auto& entry:fs::directory_iterator(c.output)) {
+                if(lower(entry.path().extension().string())==".nrrd")
+                    throw std::runtime_error("Output contains NRRD crops. Delete all crop NRRDs before replaying edited boxes.json");
+                if(entry.path().extension()==".partial") throw std::runtime_error("Output contains an unfinished .partial file; resolve it before replay");
+            }
+            if(!c.box_preview) {
+                c.box_preview=true;
+                std::cerr<<"Manifest replay always regenerates boxes_preview.png; ignoring --no-box-preview.\n";
+            }
+            std::cerr<<"Reusing edited boxes from "<<json_path<<"; segmentation and margin options are skipped.\n";
+        }
+        if(fs::exists(partial)) throw std::runtime_error("Unfinished boxes.json.partial already exists");
+        simple_json::Value reused_document;
+        std::vector<Box> boxes;
+        if(reuse_manifest) {
+            auto loaded=load_manifest(json_path,v,c);boxes=std::move(loaded.boxes);reused_document=std::move(loaded.document);c.threshold=loaded.preview_threshold;
+        } else boxes=c.boxes.empty()?detect(v,c):c.boxes;
+        if(!reuse_manifest && c.count && c.count!=static_cast<int>(boxes.size())) throw std::runtime_error("Count and boxes disagree");
         std::set<std::string> names;
         for(size_t i=0;i<boxes.size();++i) {
             auto& b=boxes[i];
-            for(int d=0;d<3;++d) if(b.lo[d]<0 || b.lo[d]>=b.hi[d] || b.hi[d]>v.size[d]) throw std::runtime_error("Box is empty or outside scan");
-            b.name=safe_name(c.labels.empty()?c.input.stem().string()+"_"+std::to_string(i+1):c.labels[i]);
-            if(!names.insert(b.name).second) throw std::runtime_error("Duplicate output name: " + b.name);
-            if(fs::exists(c.output/(b.name+".nrrd")) || fs::exists(c.output/(b.name+".nrrd.partial"))) throw std::runtime_error("Output already exists: " + b.name);
+            for(int d=0;d<3;++d) if(b.lo[d]<0 || b.lo[d]>=b.hi[d] || b.hi[d]>v.size[d])
+                throw std::runtime_error("Box "+std::to_string(i+1)+" is empty or outside the source scan");
+            if(!reuse_manifest) b.name=safe_name(c.labels.empty()?c.input.stem().string()+"_"+std::to_string(i+1):c.labels[i]);
+            if(!names.insert(b.name).second) throw std::runtime_error("Duplicate output name: "+b.name);
+            if(fs::exists(c.output/(b.name+".nrrd")) || fs::exists(c.output/(b.name+".nrrd.partial"))) throw std::runtime_error("Output already exists: "+b.name);
             std::cerr<<i+1<<": "<<b.name<<" "<<array_text(b.lo)<<" -> "<<array_text(b.hi)<<'\n';
         }
         fs::create_directories(c.output);
-        auto json_path=c.output/"boxes.json",partial=c.output/"boxes.json.partial";
-        if(fs::exists(json_path) || fs::exists(partial)) throw std::runtime_error("boxes.json already exists; choose a new output directory");
+        if(!reuse_manifest && fs::exists(json_path)) throw std::runtime_error("boxes.json already exists; choose a new output directory");
         auto image_path=c.output/"boxes_preview.png",image_partial=c.output/"boxes_preview.png.partial";
-        if(c.box_preview && (fs::exists(image_path) || fs::exists(image_partial))) throw std::runtime_error("Box preview already exists; choose a new output directory");
-        // Validate all output headers and save recoverable bounds before the
-        // expensive writes. If cropping fails, boxes.json remains replayable.
+        if(fs::exists(image_partial)) throw std::runtime_error("Unfinished boxes_preview.png.partial already exists");
+        if(!reuse_manifest && c.box_preview && fs::exists(image_path)) throw std::runtime_error("Box preview already exists; choose a new output directory");
         for(const auto& b:boxes) v.header(b);
-        auto publish=[&](const Config& config) {
-            std::ofstream out(partial); out<<manifest(v,config,boxes); out.close();
-            if(!out) { std::error_code ec; fs::remove(partial,ec); throw std::runtime_error("Cannot write manifest"); }
+        auto publish=[&](bool crops_written) {
+            std::string text;
+            if(reuse_manifest) {
+                reused_document.set("crops_written",simple_json::Value::boolean_value(crops_written));
+                text=simple_json::dump(reused_document,2);
+            } else {
+                Config state=c;state.preview=!crops_written;text=manifest(v,state,boxes);
+            }
+            std::ofstream out(partial);out<<text;out.close();
+            if(!out) {std::error_code ec;fs::remove(partial,ec);throw std::runtime_error("Cannot write manifest");}
             fs::rename(partial,json_path);
         };
-        Config pending=c; pending.preview=true; publish(pending);
+        publish(false);
         if(c.box_preview) {
             std::vector<PreviewBox> preview_boxes;
             for(const auto& b:boxes) preview_boxes.push_back({b.lo,b.hi,b.name});
             try {
                 write_box_preview(image_partial,v.size,preview_boxes,[&](int x,int y,int z){return v.value(x,y,z);},[&](){v.release_z(0,v.size[2]);},c.threshold);
                 fs::rename(image_partial,image_path);
-            } catch(...) { std::error_code ec; fs::remove(image_partial,ec); throw; }
+            } catch(...) {std::error_code ec;fs::remove(image_partial,ec);throw;}
             std::cerr<<"Box image: "<<image_path<<'\n';
         }
-        if(!c.preview) { write_crops(v,c,boxes); publish(c); }
+        if(!c.preview) {write_crops(v,c,boxes);publish(true);}
         std::cerr<<(c.preview?"Preview":"Done")<<": "<<boxes.size()<<" beams, "<<json_path<<", "
                  <<std::chrono::duration<double>(std::chrono::steady_clock::now()-start).count()<<" s\n";
         return 0;
-    } catch(const std::exception& e) { std::cerr<<"Error: "<<e.what()<<'\n'; return 1; }
+    } catch(const std::exception& e) {std::cerr<<"Error: "<<e.what()<<'\n';return 1;}
 }

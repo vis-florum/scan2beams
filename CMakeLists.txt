@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.16)
 project(scan2beams LANGUAGES CXX)
-add_executable(scan_separator src/scan_separator.cpp src/preview.cpp)
+add_executable(scan_separator src/scan_separator.cpp src/preview.cpp src/json.cpp)
 target_compile_features(scan_separator PRIVATE cxx_std_17)
 target_compile_options(scan_separator PRIVATE -Wall -Wextra -Wpedantic)
 include(CTest)
