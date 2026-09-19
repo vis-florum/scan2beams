@@ -1,0 +1,13 @@
+scan2beams
+Copyright 2026 Johannes A. J. Huber
+
+This product includes software developed by Johannes A. J. Huber.
+ORCID: https://orcid.org/0000-0001-9196-0370
+
+scan2beams is a C++ command-line tool for separating long wooden beams in
+16-bit CT scans stored as raw NRRD volumes. It writes cropped NRRD volumes,
+source-coordinate bounding boxes, and numbered diagnostic previews.
+
+For scholarly work that uses this software, please cite scan2beams using the
+metadata in CITATION.cff. This citation request is for scholarly attribution
+and does not modify the terms of the Apache License, Version 2.0.

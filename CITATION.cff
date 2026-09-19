@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use scan2beams in scholarly work, please cite it using this metadata."
+title: scan2beams
+abstract: "A fast C++ command-line tool for detecting and cropping long wooden beams from large 16-bit CT volumes stored as raw NRRD files. It uses sparse two-dimensional sampling and morphology, and writes cropped NRRD volumes, original-coordinate bounding boxes, and numbered diagnostic previews."
+authors:
+  - family-names: Huber
+    given-names: Johannes A. J.
+    email: johannes.huber@ltu.se
+    orcid: "https://orcid.org/0000-0001-9196-0370"
+repository-code: "https://github.com/vis-florum/scan2beams"
+license: Apache-2.0
+keywords:
+  - computed tomography
+  - NRRD
+  - image segmentation
+  - object cropping
+  - wood science
+  - wooden beams
